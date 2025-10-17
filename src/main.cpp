@@ -1,18 +1,59 @@
 #include <Arduino.h>
+#include <LovyanGFX.hpp>
 
-// put function declarations here:
-int myFunction(int, int);
+class LGFX_CrowPanel : public lgfx::LGFX_Device {
+  lgfx::Panel_GC9A01 _panel;
+  lgfx::Bus_SPI _bus;
 
-void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
-}
+public:
+  LGFX_CrowPanel(void) {
+    // SPI Bus configuration
+    {
+      auto config = _bus.config();
+      config.spi_host = SPI2_HOST;
+      config.spi_mode = 0;
+      config.freq_write = 80000000;
+      config.freq_read = 16000000;
+      config.spi_3wire = false;
+      config.use_lock = true;
+      config.dma_channel = SPI_DMA_CH_AUTO;
+      config.pin_sclk = 12;
+      config.pin_mosi = 11;
+      config.pin_miso = -1;
+      config.pin_dc = 3;
+      _bus.config(config);
+      _panel.setBus(&_bus);
+    }
 
-void loop() {
-  // put your main code here, to run repeatedly:
-}
+    // Panel configuration
+    {
+      auto config = _panel.config();
+      config.pin_cs = 9;
+      config.pin_rst = 14;
+      config.pin_busy = -1;
+      config.panel_width = 240;
+      config.panel_height = 240;
+      config.memory_width = 240;
+      config.memory_height = 240;
+      config.offset_rotation = 0;
+      config.offset_x = 0;
+      config.offset_y = 0;
+      config.dummy_read_pixel = 8;
+      config.dummy_read_bits = 1;
+      config.readable = false;
+      config.invert = true;
+      config.rgb_order = false;
+      config.dlen_16bit = false;
+      config.bus_shared = false;
+      _panel.config(config);
+    }
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
-}
+    setPanel(&_panel);
+  }
+};
+
+LGFX_CrowPanel display;
+
+void setup() {}
+
+void loop() {}
