@@ -20,6 +20,30 @@ volatile int lastEncoded = 0;
 volatile bool buttonPressed = false;
 volatile unsigned long lastButtonTime = 0;
 
+void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
+                uint8_t stepDelayMs) {
+  // Save current brightness
+  uint8_t original = ledStrip.getBrightness();
+  for (uint8_t c = 0; c < cycles; c++) {
+    for (uint8_t b = 0; b <= maxBrightness; b++) {
+      ledStrip.setBrightness(b);
+      for (int i = 0; i < LED_NUM; i++)
+        ledStrip.setPixelColor(i, colour);
+      ledStrip.show();
+      delay(stepDelayMs);
+    }
+    for (int b = maxBrightness; b >= 0; b--) {
+      ledStrip.setBrightness((uint8_t)b);
+      for (int i = 0; i < LED_NUM; i++)
+        ledStrip.setPixelColor(i, colour);
+      ledStrip.show();
+      delay(stepDelayMs);
+    }
+  }
+  ledStrip.setBrightness(original);
+  ledStrip.show();
+}
+
 /**
  * @brief the backlight of the display to 50% brightness
  */
@@ -103,6 +127,11 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  ledStrip.begin();
+  ledStrip.setBrightness(DEFAULT_LED_BRIGHTNESS);
+  ledStrip.clear();
+  ledStrip.show();
+
   // Power control for the display
   pinMode(40, OUTPUT);
   digitalWrite(40, LOW);
@@ -124,10 +153,8 @@ void setup() {
   pinMode(SWITCH_PIN, INPUT_PULLUP);
 
   // Attach interrupt handlers
-  attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), handleRotaryEncoder,
-                  CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), handleRotaryEncoder,
-                  CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), handleRotaryEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), handleRotaryEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), handleButton, FALLING);
 
   updateDisplay();
