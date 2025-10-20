@@ -36,20 +36,20 @@ void CST816D::begin(void) {
   }
 
   // Initialize Touch
-  i2c_write(0xFE, 0XFF);
+  i2cWrite(0xFE, 0XFF);
 }
 
 bool CST816D::getTouch(uint16_t *x, uint16_t *y, uint8_t *gesture) {
   bool FingerIndex = false;
-  FingerIndex = (bool)i2c_read(0x02);
+  FingerIndex = (bool)i2cRead(0x02);
 
-  *gesture = i2c_read(0x01);
+  *gesture = i2cRead(0x01);
   if (!(*gesture == SlideUp || *gesture == SlideDown)) {
     *gesture = None;
   }
 
   uint8_t data[4];
-  i2c_read_continuous(0x03, data, 4);
+  i2cReadContinuous(0x03, data, 4);
   *x = ((data[0] & 0x0f) << 8) | data[1];
   *y = ((data[2] & 0x0f) << 8) | data[3];
 
@@ -58,7 +58,7 @@ bool CST816D::getTouch(uint16_t *x, uint16_t *y, uint8_t *gesture) {
   return FingerIndex;
 }
 
-uint8_t CST816D::i2c_read(uint8_t addr) {
+uint8_t CST816D::i2cRead(uint8_t addr) {
   uint8_t rdData;
   uint8_t rdDataCount;
   do {
@@ -73,8 +73,8 @@ uint8_t CST816D::i2c_read(uint8_t addr) {
   return rdData;
 }
 
-uint8_t CST816D::i2c_read_continuous(uint8_t addr, uint8_t *data,
-                                     uint32_t length) {
+uint8_t CST816D::i2cReadContinuous(uint8_t addr, uint8_t *data,
+                                   uint32_t length) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   if (Wire1.endTransmission(true))
@@ -86,15 +86,15 @@ uint8_t CST816D::i2c_read_continuous(uint8_t addr, uint8_t *data,
   return 0;
 }
 
-void CST816D::i2c_write(uint8_t addr, uint8_t data) {
+void CST816D::i2cWrite(uint8_t addr, uint8_t data) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   Wire1.write(data);
   Wire1.endTransmission();
 }
 
-uint8_t CST816D::i2c_write_continuous(uint8_t addr, const uint8_t *data,
-                                      uint32_t length) {
+uint8_t CST816D::i2cWriteContinuous(uint8_t addr, const uint8_t *data,
+                                    uint32_t length) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   for (int i = 0; i < length; i++) {
