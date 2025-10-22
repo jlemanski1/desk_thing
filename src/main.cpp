@@ -7,18 +7,9 @@
 #include <WiFiManager.h>
 #include "credentials.h"
 #include "debug.h"
+#include "config.h"
 #include "spotify_client.h"
 #include <Arduino.h>
-
-
-
-#define SCREEN_BACKLIGHT_PIN 46
-#define ENCODER_A_PIN 45
-#define ENCODER_B_PIN 42
-#define SWITCH_PIN 41
-#define LED_PIN 48
-#define LED_NUM 5
-#define DEFAULT_LED_BRIGHTNESS 25
 
 LGFX display;
 SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
@@ -32,7 +23,6 @@ volatile unsigned long lastButtonTime = 0;
 
 // Update interval
 unsigned long lastPlaybackUpdate = 0;
-const unsigned long playbackUpdateInterval = 2000;
 
 void connectWiFi() {
   DebugPrintln("Starting WiFi configuration...");
@@ -72,9 +62,7 @@ void connectWiFi() {
     });
 
   // Try to connect with saved credentials, or start config portal
-  // Network name: "DeskThing"
-  // Password: "ESP32-DeskThing"
-  bool connected = wifiManager.autoConnect("DeskThing", "ESP32-DeskThing");
+  bool connected = wifiManager.autoConnect(Wifi::AP_NAME, Wifi::AP_PASS);
 
   if (connected) {
     DebugPrintln("\nWiFi Connected!");
@@ -117,45 +105,22 @@ String formatTime(int milliseconds) {
   return String(buffer);
 }
 
-// void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
-//   uint8_t stepDelayMs) {
-//   // Save current brightness
-//   uint8_t original = ledStrip.getBrightness();
-//   for (uint8_t c = 0; c < cycles; c++) {
-//     for (uint8_t b = 0; b <= maxBrightness; b++) {
-//       ledStrip.setBrightness(b);
-//       for (int i = 0; i < LED_NUM; i++)
-//         ledStrip.setPixelColor(i, colour);
-//       ledStrip.show();
-//       delay(stepDelayMs);
-//     }
-//     for (int b = maxBrightness; b >= 0; b--) {
-//       ledStrip.setBrightness((uint8_t)b);
-//       for (int i = 0; i < LED_NUM; i++)
-//         ledStrip.setPixelColor(i, colour);
-//       ledStrip.show();
-//       delay(stepDelayMs);
-//     }
-//   }
-//   ledStrip.setBrightness(original);
-//   ledStrip.show();
-// }
 
 /**
  * @brief the backlight of the display to 50% brightness
  */
 void initBacklight() {
   ledcSetup(0, 5000, 8);
-  ledcAttachPin(SCREEN_BACKLIGHT_PIN, 0);
-  ledcWrite(0, 128); // Set to 50%
+  ledcAttachPin(Pins::SCREEN_BACKLIGHT, 0);
+  ledcWrite(0, Display::BACKLIGHT_BRIGHTNESS);
 }
 
 /**
  * @brief Interrupt handler for the rotary encoder
  */
 void IRAM_ATTR handleRotaryEncoder() {
-  int currentA = digitalRead(ENCODER_A_PIN);
-  int currentB = digitalRead(ENCODER_B_PIN);
+  int currentA = digitalRead(Pins::ENCODER_A);
+  int currentB = digitalRead(Pins::ENCODER_B);
 
   // Combine the two pin readings into a single encoded value
   int encoded = (currentA << 1) | currentB;
@@ -186,8 +151,8 @@ void IRAM_ATTR handleButton() {
   unsigned long now = millis();
 
   // Debounce for 200ms
-  if (now - lastButtonTime > 200) {
-    if (digitalRead(SWITCH_PIN) == LOW) {
+  if (now - lastButtonTime > Timing::BUTTON_DEBOUNCE_MS) {
+    if (digitalRead(Pins::ENCODER_SWITCH) == LOW) {
       buttonPressed = true;
       lastButtonTime = now;
     }
@@ -287,19 +252,19 @@ void setup() {
   initBacklight();
 
   // Set up encoder pins
-  pinMode(ENCODER_A_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_B_PIN, INPUT_PULLUP);
-  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  pinMode(Pins::ENCODER_A, INPUT_PULLUP);
+  pinMode(Pins::ENCODER_B, INPUT_PULLUP);
+  pinMode(Pins::ENCODER_SWITCH, INPUT_PULLUP);
 
   // Attach interrupt handlers
-  attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), handleRotaryEncoder, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), handleRotaryEncoder, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), handleButton, FALLING);
+  attachInterrupt(digitalPinToInterrupt(Pins::ENCODER_A), handleRotaryEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::ENCODER_B), handleRotaryEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::ENCODER_SWITCH), handleButton, FALLING);
 
 
   // Check for Wifi reset (hold encoder button during boot)
   delay(500); // Give time to press button
-  if (digitalRead(SWITCH_PIN) == LOW) {
+  if (digitalRead(Pins::ENCODER_SWITCH) == LOW) {
     DebugPrintln("Resetting WiFi credentials...");
     display.fillScreen(TFT_BLACK);
     display.setTextSize(2);
@@ -364,7 +329,7 @@ void loop() {
   }
 
   // Update playback info periodically
-  if (millis() - lastPlaybackUpdate > playbackUpdateInterval) {
+  if (millis() - lastPlaybackUpdate > Timing::PLAYBACK_UPDATE_MS) {
     lastPlaybackUpdate = millis();
     if (spotify.updatePlaybackState()) {
       updateDisplay();
