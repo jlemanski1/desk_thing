@@ -1,11 +1,16 @@
-#include "LGFX_CrowPanel.h"
+#include "lgfx_crow_panel.h"
 // #include <Adafruit_NeoPixel.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <base64.h>
 #include <WiFiManager.h>
+#include "credentials.h"
+#include "debug.h"
+#include "spotify_client.h"
 #include <Arduino.h>
+
+
 
 #define SCREEN_BACKLIGHT_PIN 46
 #define ENCODER_A_PIN 45
@@ -16,16 +21,21 @@
 #define DEFAULT_LED_BRIGHTNESS 25
 
 LGFX display;
+SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 // Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-volatile int encoderValue = 50; // Start at 50 (middle value)
+volatile int encoderValue = 50;
 volatile int lastEncoded = 0;
 
 volatile bool buttonPressed = false;
 volatile unsigned long lastButtonTime = 0;
 
+// Update interval
+unsigned long lastPlaybackUpdate = 0;
+const unsigned long playbackUpdateInterval = 2000;
+
 void connectWiFi() {
-  Serial.println("Starting WiFi configuration...");
+  DebugPrintln("Starting WiFi configuration...");
 
   display.fillScreen(TFT_BLACK);
   display.setTextColor(TFT_WHITE);
@@ -51,14 +61,14 @@ void connectWiFi() {
   wifiManager.setConfigPortalTimeout(180);
 
   wifiManager.setAPCallback([](WiFiManager* myWiFiManager) {
-    Serial.println("==============================");
-    Serial.println("Entered WiFi Config Mode");
-    Serial.println("==============================");
-    Serial.println("Connect to WiFi network:");
-    Serial.println("  SSID: " + String(myWiFiManager->getConfigPortalSSID()));
-    Serial.println("  Password: ESP32-DeskThing");
-    Serial.println("Then open: http://192.168.4.1");
-    Serial.println("==============================");
+    DebugPrintln("==============================");
+    DebugPrintln("Entered WiFi Config Mode");
+    DebugPrintln("==============================");
+    DebugPrintln("Connect to WiFi network:");
+    DebugPrintln("  SSID: " + String(myWiFiManager->getConfigPortalSSID()));
+    DebugPrintln("  Password: ESP32-DeskThing");
+    DebugPrintln("Then open: http://192.168.4.1");
+    DebugPrintln("==============================");
     });
 
   // Try to connect with saved credentials, or start config portal
@@ -67,11 +77,11 @@ void connectWiFi() {
   bool connected = wifiManager.autoConnect("DeskThing", "ESP32-DeskThing");
 
   if (connected) {
-    Serial.println("\nWiFi Connected!");
-    Serial.print("SSID: ");
-    Serial.println(WiFi.SSID());
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
+    DebugPrintln("\nWiFi Connected!");
+    DebugPrint("SSID: ");
+    DebugPrintln(WiFi.SSID());
+    DebugPrint("IP Address: ");
+    DebugPrintln(WiFi.localIP());
 
     display.fillScreen(TFT_BLACK);
     display.setTextSize(2);
@@ -81,7 +91,7 @@ void connectWiFi() {
     delay(1000);
   }
   else {
-    Serial.println("\nWiFi connection failed or timeout");
+    DebugPrintln("\nWiFi connection failed or timeout");
     display.fillScreen(TFT_BLACK);
     display.setTextColor(TFT_RED);
     display.setTextSize(2);
@@ -95,6 +105,16 @@ void connectWiFi() {
     delay(3000);
     ESP.restart();
   }
+}
+
+String formatTime(int milliseconds) {
+  int seconds = milliseconds / 1000;
+  int minutes = seconds / 60;
+
+  seconds = seconds % 60;
+  char buffer[6];
+  sprintf(buffer, "%d:%02d", minutes, seconds);
+  return String(buffer);
 }
 
 // void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
@@ -180,28 +200,70 @@ void IRAM_ATTR handleButton() {
 void updateDisplay() {
   display.fillScreen(TFT_BLACK);
 
-  // Draw title
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  // Play/pause button
+  display.fillCircle(120, 50, 25, spotify.isPlaying() ? TFT_GREEN : TFT_RED);
+  if (spotify.isPlaying()) {
+    display.fillRect(108, 38, 8, 24, TFT_BLACK);
+    display.fillRect(124, 38, 8, 24, TFT_BLACK);
+  }
+  else {
+    display.fillTriangle(112, 38, 112, 62, 132, 50, TFT_BLACK);
+  }
+
+  // Track name
   display.setTextSize(2);
-  display.setCursor(35, 30);
-  display.println("ENCODER");
-  display.setCursor(50, 50);
-  display.println("VALUE");
+  display.setTextColor(TFT_WHITE);
+  display.setCursor(10, 90);
+  String track = spotify.getTrackName();
+  if (track.length() > 15) track = track.substring(0, 15) + "...";
+  display.println(track);
 
-  // Draw encoder value
-  display.setTextSize(4);
-  display.setTextColor(TFT_CYAN);
-  display.setCursor(70, 90);
-  display.printf("%3d", encoderValue);
 
-  // Draw bar
-  int barWidth = map(encoderValue, 0, 100, 0, 200);
-  display.fillRect(20, 150, 200, 30, TFT_DARKGREY);
-  display.fillRect(20, 150, barWidth, 30, TFT_GREEN);
+  // Artist name
+  display.setTextSize(1);
+  display.setTextColor(TFT_LIGHTGREY);
+  display.setCursor(10, 110);
+  String artist = spotify.getArtistName();
+  if (artist.length() > 25) artist = artist.substring(0, 25) + "...";
+  display.println(artist);
+
+  // Progress bar
+  if (spotify.getTrackDurationMs() > 0) {
+    int barWidth = map(spotify.getTrackProgressMs(), 0, spotify.getTrackDurationMs(), 0, 220);
+    display.drawRect(10, 135, 220, 8, TFT_WHITE);
+    display.fillRect(10, 135, barWidth, 8, TFT_CYAN);
+
+    display.setTextSize(1);
+    display.setTextColor(TFT_WHITE);
+    display.setCursor(10, 148);
+    display.print(formatTime(spotify.getTrackProgressMs()));
+    display.setCursor(185, 148);
+    display.print(formatTime(spotify.getTrackDurationMs()));
+  }
+
+  // Volume bar
+  display.setTextSize(1);
+  display.setTextColor(TFT_WHITE);
+  display.setCursor(10, 175);
+  display.print("Volume:");
+
+  int volBarWidth = map(spotify.getVolume(), 0, 100, 0, 160);
+  display.drawRect(70, 173, 160, 12, TFT_WHITE);
+  display.fillRect(70, 173, volBarWidth, 12, TFT_YELLOW);
+
+  display.setCursor(100, 195);
+  display.printf("%d%%", spotify.getVolume());
+
+  // Instructions
+  display.setTextSize(1);
+  display.setTextColor(TFT_DARKGREY);
+  display.setCursor(20, 220);
+  display.print("Rotate=Vol | Press=Play");
+
 }
 
 void setup() {
-  Serial.begin(115200);
+  DebugBegin(115200);
   delay(1000);
 
   // ledStrip.begin();
@@ -238,7 +300,7 @@ void setup() {
   // Check for Wifi reset (hold encoder button during boot)
   delay(500); // Give time to press button
   if (digitalRead(SWITCH_PIN) == LOW) {
-    Serial.println("Resetting WiFi credentials...");
+    DebugPrintln("Resetting WiFi credentials...");
     display.fillScreen(TFT_BLACK);
     display.setTextSize(2);
     display.setTextColor(TFT_YELLOW);
@@ -255,30 +317,59 @@ void setup() {
 
   connectWiFi();
 
+  // Initialize Spotify
+  display.fillScreen(TFT_BLACK);
+  display.setCursor(20, 110);
+  display.setTextSize(2);
+  display.setTextColor(TFT_CYAN);
+  display.println("Connecting");
+  display.setCursor(40, 130);
+  display.println("Spotify...");
+
+  if (!spotify.begin()) {
+    DebugPrintln("Spotify init failed!");
+    display.fillScreen(TFT_BLACK);
+    display.setCursor(30, 110);
+    display.setTextColor(TFT_RED);
+    display.println("Spotify");
+    display.setCursor(50, 130);
+    display.println("Failed");
+    while (1) delay(1000);
+  }
+
+  delay(500);
+  spotify.updatePlaybackState();
   updateDisplay();
 
-  Serial.println("Setup Complete!");
+  DebugPrintln("Setup Complete!");
 }
 
 void loop() {
-  static int lastDisplayValue = -1;
+  // Volume control
+  if (encoderValue != 0) {
+    int newVolume = spotify.getVolume() + (encoderValue * 5);
+    encoderValue = 0;
 
-  // Update display when value changes
-  if (encoderValue != lastDisplayValue) {
-    updateDisplay();
-    lastDisplayValue = encoderValue;
-
-    Serial.print("Encoder Value: ");
-    Serial.println(encoderValue);
+    if (spotify.setVolume(newVolume)) {
+      updateDisplay();
+    }
   }
 
-  // Update on button press
+  // Play/pause
   if (buttonPressed) {
     buttonPressed = false;
-    encoderValue = 50;
-    Serial.println("Button pressed...resetting to 50");
-    updateDisplay();
+    if (spotify.togglePlayPause()) {
+      updateDisplay();
+    }
   }
 
-  delay(10);
+  // Update playback info periodically
+  if (millis() - lastPlaybackUpdate > playbackUpdateInterval) {
+    lastPlaybackUpdate = millis();
+    if (spotify.updatePlaybackState()) {
+      updateDisplay();
+    }
+  }
+
+  delay(50);
 }
