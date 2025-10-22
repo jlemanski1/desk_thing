@@ -1,5 +1,4 @@
-#ifndef _CST816D_H
-#define _CST816D_H
+#pragma once
 
 #include <Wire.h>
 
@@ -22,18 +21,17 @@ enum GESTURE {
 class CST816D {
 public:
   CST816D(int8_t sda_pin = -1, int8_t scl_pin = -1, int8_t rst_pin = -1,
-          int8_t int_pin = -1);
+    int8_t int_pin = -1);
 
   void begin(void);
-  bool getTouch(uint16_t *x, uint16_t *y, uint8_t *gesture);
+  bool getTouch(uint16_t* x, uint16_t* y, uint8_t* gesture);
 
 private:
   int8_t _sda, _scl, _rst, _int;
 
   uint8_t i2cRead(uint8_t addr);
-  uint8_t i2cReadContinuous(uint8_t addr, uint8_t *data, uint32_t length);
+  uint8_t i2cReadContinuous(uint8_t addr, uint8_t* data, uint32_t length);
   void i2cWrite(uint8_t addr, uint8_t data);
-  uint8_t i2cWriteContinuous(uint8_t addr, const uint8_t *data,
-                             uint32_t length);
+  uint8_t i2cWriteContinuous(uint8_t addr, const uint8_t* data,
+    uint32_t length);
 };
-#endif
