@@ -1,5 +1,10 @@
 #include "LGFX_CrowPanel.h"
-#include <Adafruit_NeoPixel.h>
+// #include <Adafruit_NeoPixel.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <base64.h>
+#include <WiFiManager.h>
 #include <Arduino.h>
 
 #define SCREEN_BACKLIGHT_PIN 46
@@ -11,8 +16,7 @@
 #define DEFAULT_LED_BRIGHTNESS 25
 
 LGFX display;
-Adafruit_NeoPixel ledStrip =
-    Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
+// Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 volatile int encoderValue = 50; // Start at 50 (middle value)
 volatile int lastEncoded = 0;
@@ -20,29 +24,102 @@ volatile int lastEncoded = 0;
 volatile bool buttonPressed = false;
 volatile unsigned long lastButtonTime = 0;
 
-void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
-                uint8_t stepDelayMs) {
-  // Save current brightness
-  uint8_t original = ledStrip.getBrightness();
-  for (uint8_t c = 0; c < cycles; c++) {
-    for (uint8_t b = 0; b <= maxBrightness; b++) {
-      ledStrip.setBrightness(b);
-      for (int i = 0; i < LED_NUM; i++)
-        ledStrip.setPixelColor(i, colour);
-      ledStrip.show();
-      delay(stepDelayMs);
-    }
-    for (int b = maxBrightness; b >= 0; b--) {
-      ledStrip.setBrightness((uint8_t)b);
-      for (int i = 0; i < LED_NUM; i++)
-        ledStrip.setPixelColor(i, colour);
-      ledStrip.show();
-      delay(stepDelayMs);
-    }
+void connectWiFi() {
+  Serial.println("Starting WiFi configuration...");
+
+  display.fillScreen(TFT_BLACK);
+  display.setTextColor(TFT_WHITE);
+  display.setTextSize(2);
+  display.setCursor(40, 90);
+  display.println("WiFi Setup");
+  display.setTextSize(1);
+  display.setCursor(30, 120);
+  display.println("Connect phone to:");
+  display.setTextSize(2);
+  display.setTextColor(TFT_CYAN);
+  display.setCursor(10, 140);
+  display.println("DeskThing");
+  display.setTextSize(1);
+  display.setTextColor(TFT_YELLOW);
+  display.setCursor(30, 170);
+  display.println("Password: ESP32-DeskThing");
+
+  // Create WiFiManager instance
+  WiFiManager wifiManager;
+
+  // Set timeout for portal (3mins)
+  wifiManager.setConfigPortalTimeout(180);
+
+  wifiManager.setAPCallback([](WiFiManager* myWiFiManager) {
+    Serial.println("==============================");
+    Serial.println("Entered WiFi Config Mode");
+    Serial.println("==============================");
+    Serial.println("Connect to WiFi network:");
+    Serial.println("  SSID: " + String(myWiFiManager->getConfigPortalSSID()));
+    Serial.println("  Password: ESP32-DeskThing");
+    Serial.println("Then open: http://192.168.4.1");
+    Serial.println("==============================");
+    });
+
+  // Try to connect with saved credentials, or start config portal
+  // Network name: "DeskThing"
+  // Password: "ESP32-DeskThing"
+  bool connected = wifiManager.autoConnect("DeskThing", "ESP32-DeskThing");
+
+  if (connected) {
+    Serial.println("\nWiFi Connected!");
+    Serial.print("SSID: ");
+    Serial.println(WiFi.SSID());
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    display.fillScreen(TFT_BLACK);
+    display.setTextSize(2);
+    display.setTextColor(TFT_GREEN);
+    display.setCursor(40, 110);
+    display.println("WiFi OK!");
+    delay(1000);
   }
-  ledStrip.setBrightness(original);
-  ledStrip.show();
+  else {
+    Serial.println("\nWiFi connection failed or timeout");
+    display.fillScreen(TFT_BLACK);
+    display.setTextColor(TFT_RED);
+    display.setTextSize(2);
+    display.setCursor(30, 100);
+    display.println("WiFi Failed");
+    display.setTextSize(1);
+    display.setCursor(30, 130);
+    display.println("Check connection");
+    display.setCursor(40, 150);
+    display.println("Restarting...");
+    delay(3000);
+    ESP.restart();
+  }
 }
+
+// void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
+//   uint8_t stepDelayMs) {
+//   // Save current brightness
+//   uint8_t original = ledStrip.getBrightness();
+//   for (uint8_t c = 0; c < cycles; c++) {
+//     for (uint8_t b = 0; b <= maxBrightness; b++) {
+//       ledStrip.setBrightness(b);
+//       for (int i = 0; i < LED_NUM; i++)
+//         ledStrip.setPixelColor(i, colour);
+//       ledStrip.show();
+//       delay(stepDelayMs);
+//     }
+//     for (int b = maxBrightness; b >= 0; b--) {
+//       ledStrip.setBrightness((uint8_t)b);
+//       for (int i = 0; i < LED_NUM; i++)
+//         ledStrip.setPixelColor(i, colour);
+//       ledStrip.show();
+//       delay(stepDelayMs);
+//     }
+//   }
+//   ledStrip.setBrightness(original);
+//   ledStrip.show();
+// }
 
 /**
  * @brief the backlight of the display to 50% brightness
@@ -127,10 +204,10 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  ledStrip.begin();
-  ledStrip.setBrightness(DEFAULT_LED_BRIGHTNESS);
-  ledStrip.clear();
-  ledStrip.show();
+  // ledStrip.begin();
+  // ledStrip.setBrightness(DEFAULT_LED_BRIGHTNESS);
+  // ledStrip.clear();
+  // ledStrip.show();
 
   // Power control for the display
   pinMode(40, OUTPUT);
@@ -157,7 +234,30 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), handleRotaryEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), handleButton, FALLING);
 
+
+  // Check for Wifi reset (hold encoder button during boot)
+  delay(500); // Give time to press button
+  if (digitalRead(SWITCH_PIN) == LOW) {
+    Serial.println("Resetting WiFi credentials...");
+    display.fillScreen(TFT_BLACK);
+    display.setTextSize(2);
+    display.setTextColor(TFT_YELLOW);
+    display.setCursor(30, 110);
+    display.println("Resetting");
+    display.setCursor(50, 130);
+    display.println("WiFi...");
+
+    WiFiManager WiFiManager;
+    WiFiManager.resetSettings();
+    delay(2000);
+    ESP.restart();
+  }
+
+  connectWiFi();
+
   updateDisplay();
+
+  Serial.println("Setup Complete!");
 }
 
 void loop() {
