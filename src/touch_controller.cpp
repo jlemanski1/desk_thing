@@ -1,19 +1,20 @@
-#include "CST816D.h"
+#include "touch_controller.h"
 
-CST816D::CST816D(int8_t sda_pin, int8_t scl_pin, int8_t rst_pin,
-                 int8_t int_pin) {
+TouchController::TouchController(int8_t sda_pin, int8_t scl_pin, int8_t rst_pin,
+  int8_t int_pin) {
   _sda = sda_pin;
   _scl = scl_pin;
   _rst = rst_pin;
   _int = int_pin;
 }
 
-void CST816D::begin(void) {
+void TouchController::begin(void) {
   // Initialize I2C
   if (_sda != -1 && _scl != -1) {
     Wire1.begin(_sda, _scl);
 
-  } else {
+  }
+  else {
     Wire1.begin();
   }
 
@@ -39,7 +40,7 @@ void CST816D::begin(void) {
   i2cWrite(0xFE, 0XFF);
 }
 
-bool CST816D::getTouch(uint16_t *x, uint16_t *y, uint8_t *gesture) {
+bool TouchController::getTouch(uint16_t* x, uint16_t* y, uint8_t* gesture) {
   bool FingerIndex = false;
   FingerIndex = (bool)i2cRead(0x02);
 
@@ -58,7 +59,7 @@ bool CST816D::getTouch(uint16_t *x, uint16_t *y, uint8_t *gesture) {
   return FingerIndex;
 }
 
-uint8_t CST816D::i2cRead(uint8_t addr) {
+uint8_t TouchController::i2cRead(uint8_t addr) {
   uint8_t rdData;
   uint8_t rdDataCount;
   do {
@@ -73,8 +74,8 @@ uint8_t CST816D::i2cRead(uint8_t addr) {
   return rdData;
 }
 
-uint8_t CST816D::i2cReadContinuous(uint8_t addr, uint8_t *data,
-                                   uint32_t length) {
+uint8_t TouchController::i2cReadContinuous(uint8_t addr, uint8_t* data,
+  uint32_t length) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   if (Wire1.endTransmission(true))
@@ -86,15 +87,15 @@ uint8_t CST816D::i2cReadContinuous(uint8_t addr, uint8_t *data,
   return 0;
 }
 
-void CST816D::i2cWrite(uint8_t addr, uint8_t data) {
+void TouchController::i2cWrite(uint8_t addr, uint8_t data) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   Wire1.write(data);
   Wire1.endTransmission();
 }
 
-uint8_t CST816D::i2cWriteContinuous(uint8_t addr, const uint8_t *data,
-                                    uint32_t length) {
+uint8_t TouchController::i2cWriteContinuous(uint8_t addr, const uint8_t* data,
+  uint32_t length) {
   Wire1.beginTransmission(I2C_ADDR_CST816D);
   Wire1.write(addr);
   for (int i = 0; i < length; i++) {
