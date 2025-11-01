@@ -1,284 +1,159 @@
-#include "LGFX_CrowPanel.h"
+#include "lgfx_display.h"
 // #include <Adafruit_NeoPixel.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <base64.h>
 #include <WiFiManager.h>
+#include "credentials.h"
+#include "debug.h"
+#include "config.h"
+#include "spotify_client.h"
+#include "display_manager.h"
+#include "encoder_controller.h"
 #include <Arduino.h>
 
-#define SCREEN_BACKLIGHT_PIN 46
-#define ENCODER_A_PIN 45
-#define ENCODER_B_PIN 42
-#define SWITCH_PIN 41
-#define LED_PIN 48
-#define LED_NUM 5
-#define DEFAULT_LED_BRIGHTNESS 25
-
-LGFX display;
+DisplayManager displayManager;
+SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
+EncoderController encoder(Pins::ENCODER_A, Pins::ENCODER_B, Pins::ENCODER_SWITCH);
 // Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-volatile int encoderValue = 50; // Start at 50 (middle value)
-volatile int lastEncoded = 0;
+// Update interval
+unsigned long lastPlaybackUpdate = 0;
 
-volatile bool buttonPressed = false;
-volatile unsigned long lastButtonTime = 0;
+void initPowerPins() {
+  // Power control for the display
+  pinMode(Pins::POWER_CONTROL, OUTPUT);
+  digitalWrite(Pins::POWER_CONTROL, LOW);
 
-void connectWiFi() {
-  Serial.println("Starting WiFi configuration...");
+  // Power control for touch controller & I2C
+  pinMode(Pins::POWER_ENABLE_1, OUTPUT);
+  digitalWrite(Pins::POWER_ENABLE_1, HIGH);
+  pinMode(Pins::POWER_ENABLE_2, OUTPUT);
+  digitalWrite(Pins::POWER_ENABLE_2, HIGH);
+}
 
-  display.fillScreen(TFT_BLACK);
-  display.setTextColor(TFT_WHITE);
-  display.setTextSize(2);
-  display.setCursor(40, 90);
-  display.println("WiFi Setup");
-  display.setTextSize(1);
-  display.setCursor(30, 120);
-  display.println("Connect phone to:");
-  display.setTextSize(2);
-  display.setTextColor(TFT_CYAN);
-  display.setCursor(10, 140);
-  display.println("DeskThing");
-  display.setTextSize(1);
-  display.setTextColor(TFT_YELLOW);
-  display.setCursor(30, 170);
-  display.println("Password: ESP32-DeskThing");
+bool connectWiFi() {
+  DebugPrintln("Starting WiFi configuration...");
 
-  // Create WiFiManager instance
+  displayManager.showWiFiSetup();
+
+
   WiFiManager wifiManager;
 
   // Set timeout for portal (3mins)
   wifiManager.setConfigPortalTimeout(180);
 
   wifiManager.setAPCallback([](WiFiManager* myWiFiManager) {
-    Serial.println("==============================");
-    Serial.println("Entered WiFi Config Mode");
-    Serial.println("==============================");
-    Serial.println("Connect to WiFi network:");
-    Serial.println("  SSID: " + String(myWiFiManager->getConfigPortalSSID()));
-    Serial.println("  Password: ESP32-DeskThing");
-    Serial.println("Then open: http://192.168.4.1");
-    Serial.println("==============================");
+    DebugPrintln("==============================");
+    DebugPrintln("Entered WiFi Config Mode");
+    DebugPrintln("==============================");
+    DebugPrintln("Connect to WiFi network:");
+    DebugPrintln("  SSID: " + String(myWiFiManager->getConfigPortalSSID()));
+    DebugPrintln("  Password: ESP32-DeskThing");
+    DebugPrintln("Then open: http://192.168.4.1");
+    DebugPrintln("==============================");
     });
 
   // Try to connect with saved credentials, or start config portal
-  // Network name: "DeskThing"
-  // Password: "ESP32-DeskThing"
-  bool connected = wifiManager.autoConnect("DeskThing", "ESP32-DeskThing");
+  bool connected = wifiManager.autoConnect(Wifi::AP_NAME, Wifi::AP_PASS);
 
   if (connected) {
-    Serial.println("\nWiFi Connected!");
-    Serial.print("SSID: ");
-    Serial.println(WiFi.SSID());
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
+    DebugPrintln("\nWiFi Connected!");
+    DebugPrint("SSID: ");
+    DebugPrintln(WiFi.SSID());
+    DebugPrint("IP Address: ");
+    DebugPrintln(WiFi.localIP());
 
-    display.fillScreen(TFT_BLACK);
-    display.setTextSize(2);
-    display.setTextColor(TFT_GREEN);
-    display.setCursor(40, 110);
-    display.println("WiFi OK!");
+    displayManager.showWiFiConnected();
     delay(1000);
+    return true;
   }
   else {
-    Serial.println("\nWiFi connection failed or timeout");
-    display.fillScreen(TFT_BLACK);
-    display.setTextColor(TFT_RED);
-    display.setTextSize(2);
-    display.setCursor(30, 100);
-    display.println("WiFi Failed");
-    display.setTextSize(1);
-    display.setCursor(30, 130);
-    display.println("Check connection");
-    display.setCursor(40, 150);
-    display.println("Restarting...");
+    DebugPrintln("\nWiFi connection failed or timeout");
+    displayManager.showWiFiFailed();
     delay(3000);
-    ESP.restart();
+    return false;
   }
 }
 
-// void breathLEDs(uint32_t colour, uint8_t maxBrightness, uint8_t cycles,
-//   uint8_t stepDelayMs) {
-//   // Save current brightness
-//   uint8_t original = ledStrip.getBrightness();
-//   for (uint8_t c = 0; c < cycles; c++) {
-//     for (uint8_t b = 0; b <= maxBrightness; b++) {
-//       ledStrip.setBrightness(b);
-//       for (int i = 0; i < LED_NUM; i++)
-//         ledStrip.setPixelColor(i, colour);
-//       ledStrip.show();
-//       delay(stepDelayMs);
-//     }
-//     for (int b = maxBrightness; b >= 0; b--) {
-//       ledStrip.setBrightness((uint8_t)b);
-//       for (int i = 0; i < LED_NUM; i++)
-//         ledStrip.setPixelColor(i, colour);
-//       ledStrip.show();
-//       delay(stepDelayMs);
-//     }
-//   }
-//   ledStrip.setBrightness(original);
-//   ledStrip.show();
-// }
 
 /**
- * @brief the backlight of the display to 50% brightness
+ * @brief Resets the wifi manager settings when the encoder button is held during boot
  */
-void initBacklight() {
-  ledcSetup(0, 5000, 8);
-  ledcAttachPin(SCREEN_BACKLIGHT_PIN, 0);
-  ledcWrite(0, 128); // Set to 50%
-}
+void checkWiFiReset() {
+  delay(500);
+  if (digitalRead(Pins::ENCODER_SWITCH) == LOW) {
+    DebugPrintln("WiFi: Resetting credentials...");
+    displayManager.showResettingWiFi();
 
-/**
- * @brief Interrupt handler for the rotary encoder
- */
-void IRAM_ATTR handleRotaryEncoder() {
-  int currentA = digitalRead(ENCODER_A_PIN);
-  int currentB = digitalRead(ENCODER_B_PIN);
-
-  // Combine the two pin readings into a single encoded value
-  int encoded = (currentA << 1) | currentB;
-
-  // Create a sum of previous and current readings
-  int sum = (lastEncoded << 2) | encoded;
-
-  // Determine direction based on the pattern (which pin changes first)
-  // This implements a state machine for reliable encoder reading
-  if (sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) {
-    encoderValue++; // Clockwise rotation
-    if (encoderValue > 100)
-      encoderValue = 100; // Cap at 100
-  }
-  if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {
-    encoderValue--; // Counter-clockwise rotation
-    if (encoderValue < 0)
-      encoderValue = 0; // Cap at 0
-  }
-
-  lastEncoded = encoded;
-}
-
-/**
- * @brief Interrupt handler for the button switch
- */
-void IRAM_ATTR handleButton() {
-  unsigned long now = millis();
-
-  // Debounce for 200ms
-  if (now - lastButtonTime > 200) {
-    if (digitalRead(SWITCH_PIN) == LOW) {
-      buttonPressed = true;
-      lastButtonTime = now;
-    }
-  }
-}
-
-/**
- * @brief Displays the current rotary encoder / button values.
- */
-void updateDisplay() {
-  display.fillScreen(TFT_BLACK);
-
-  // Draw title
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  display.setTextSize(2);
-  display.setCursor(35, 30);
-  display.println("ENCODER");
-  display.setCursor(50, 50);
-  display.println("VALUE");
-
-  // Draw encoder value
-  display.setTextSize(4);
-  display.setTextColor(TFT_CYAN);
-  display.setCursor(70, 90);
-  display.printf("%3d", encoderValue);
-
-  // Draw bar
-  int barWidth = map(encoderValue, 0, 100, 0, 200);
-  display.fillRect(20, 150, 200, 30, TFT_DARKGREY);
-  display.fillRect(20, 150, barWidth, 30, TFT_GREEN);
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-
-  // ledStrip.begin();
-  // ledStrip.setBrightness(DEFAULT_LED_BRIGHTNESS);
-  // ledStrip.clear();
-  // ledStrip.show();
-
-  // Power control for the display
-  pinMode(40, OUTPUT);
-  digitalWrite(40, LOW);
-
-  // Power control for touch controller & I2C
-  pinMode(1, OUTPUT);
-  digitalWrite(1, HIGH);
-  pinMode(2, OUTPUT);
-  digitalWrite(2, HIGH);
-
-  display.init();
-  display.setRotation(0);
-
-  initBacklight();
-
-  // Set up encoder pins
-  pinMode(ENCODER_A_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_B_PIN, INPUT_PULLUP);
-  pinMode(SWITCH_PIN, INPUT_PULLUP);
-
-  // Attach interrupt handlers
-  attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), handleRotaryEncoder, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), handleRotaryEncoder, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), handleButton, FALLING);
-
-
-  // Check for Wifi reset (hold encoder button during boot)
-  delay(500); // Give time to press button
-  if (digitalRead(SWITCH_PIN) == LOW) {
-    Serial.println("Resetting WiFi credentials...");
-    display.fillScreen(TFT_BLACK);
-    display.setTextSize(2);
-    display.setTextColor(TFT_YELLOW);
-    display.setCursor(30, 110);
-    display.println("Resetting");
-    display.setCursor(50, 130);
-    display.println("WiFi...");
-
-    WiFiManager WiFiManager;
-    WiFiManager.resetSettings();
+    WiFiManager wifiManager;
+    wifiManager.resetSettings();
     delay(2000);
     ESP.restart();
   }
+}
 
-  connectWiFi();
 
-  updateDisplay();
 
-  Serial.println("Setup Complete!");
+void setup() {
+  DebugBegin(115200);
+  delay(1000);
+
+  // Initialize hardware
+  initPowerPins();
+  displayManager.begin();
+  encoder.begin();
+
+  checkWiFiReset();
+
+  // Connect to Wifi
+  if (!connectWiFi()) {
+    ESP.restart();
+  }
+
+  // Initialize Spotify
+  displayManager.showSpotifyConnecting();
+
+  if (!spotify.begin()) {
+    DebugPrintln("Spotify init failed!");
+    displayManager.showSpotifyFailed();
+    while (1) delay(1000);
+  }
+
+  // Get initial state
+  delay(500);
+  spotify.updatePlaybackState();
+  displayManager.showPlaybackState(spotify);
+
+  DebugPrintln("Setup Complete!");
 }
 
 void loop() {
-  static int lastDisplayValue = -1;
+  // Volume control
+  int rotation = encoder.getRotationDelta();
+  if (rotation != 0) {
+    int newVolume = spotify.getVolume() + (rotation * Encoder::VOLUME_STEP);
 
-  // Update display when value changes
-  if (encoderValue != lastDisplayValue) {
-    updateDisplay();
-    lastDisplayValue = encoderValue;
-
-    Serial.print("Encoder Value: ");
-    Serial.println(encoderValue);
+    if (spotify.setVolume(newVolume)) {
+      displayManager.showPlaybackState(spotify);
+    }
   }
 
-  // Update on button press
-  if (buttonPressed) {
-    buttonPressed = false;
-    encoderValue = 50;
-    Serial.println("Button pressed...resetting to 50");
-    updateDisplay();
+  // Play/pause
+  if (encoder.wasButtonPressed()) {
+    if (spotify.togglePlayPause()) {
+      displayManager.showPlaybackState(spotify);
+    }
   }
 
-  delay(10);
+  // Update playback info periodically
+  if (millis() - lastPlaybackUpdate > Timing::PLAYBACK_UPDATE_MS) {
+    lastPlaybackUpdate = millis();
+    if (spotify.updatePlaybackState()) {
+      displayManager.showPlaybackState(spotify);
+    }
+  }
+
+  delay(50);
 }

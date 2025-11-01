@@ -16,11 +16,11 @@ enum GESTURE {
 };
 
 /**
- * @brief  CST816D I2C CTP controller driver
+ * @brief  CST816D I2C CTP Touch Controller Driver
  */
-class CST816D {
+class TouchController {
 public:
-  CST816D(int8_t sda_pin = -1, int8_t scl_pin = -1, int8_t rst_pin = -1,
+  TouchController(int8_t sda_pin = -1, int8_t scl_pin = -1, int8_t rst_pin = -1,
     int8_t int_pin = -1);
 
   void begin(void);
