@@ -12,6 +12,10 @@ namespace Pins {
   constexpr int POWER_ENABLE_1 = 1;
   constexpr int POWER_ENABLE_2 = 2;
   constexpr int LED = 48;
+  constexpr int SDA = 6;
+  constexpr int SCL = 5;
+  constexpr int RST = -1;
+  constexpr int INT = 7;
 }
 
 

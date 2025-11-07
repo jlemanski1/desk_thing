@@ -13,6 +13,7 @@
 #include "spotify_client.h"
 #include "display_manager.h"
 #include "encoder_controller.h"
+#include "touch_controller.h"
 #include <Arduino.h>
 #include <lvgl.h>
 
@@ -23,19 +24,10 @@ static constexpr uint16_t bufferSize = (screenWidth * 50);
 
 static uint16_t lv_buffer[bufferSize];
 
-/*
- * LVGL tick callback
- * Returns the ms elapsed since startup
-*/
-static uint32_t getMillis(void) {
-  return millis();
-}
-
-
-
 DisplayManager displayManager;
 SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 EncoderController encoder(Pins::ENCODER_A, Pins::ENCODER_B, Pins::ENCODER_SWITCH);
+TouchController touch(Pins::SDA, Pins::SCL, Pins::RST, Pins::INT);
 // Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Update interval
@@ -124,15 +116,14 @@ void setup() {
   initPowerPins();
   displayManager.begin();
   // encoder.begin();
-
+  touch.begin();
 
   // Init LVGL
   lv_init();
-  // lv_tick_set_cb(getMillis);
-
 
   // Create Display Buffer
   lv_display_t* lvglDisplay = lv_display_create(screenWidth, screenHeight);
+
   // Allocate draw buffers
   size_t buf_size = screenWidth * 50; // 50 lines
   void* buf1 = heap_caps_malloc(buf_size * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -142,10 +133,9 @@ void setup() {
   }
 
   lv_display_set_buffers(lvglDisplay, buf1, NULL, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
-
-  // Set user data and flush callback
   lv_display_set_user_data(lvglDisplay, &display);
 
+  // Set flush callback
   lv_display_set_flush_cb(lvglDisplay, [](lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     LGFX* gfx = (LGFX*)lv_display_get_user_data(disp);
     uint32_t w = lv_area_get_width(area);
@@ -159,29 +149,79 @@ void setup() {
     lv_display_flush_ready(disp);
     });
 
+  // Setup touch input in LVGL
+  lv_indev_t* indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_user_data(indev, &touch);
 
-  // Test UI
-  // Create UI
-  lv_obj_t* scr = lv_screen_active();
+  lv_indev_set_read_cb(indev, [](lv_indev_t* indev_drv, lv_indev_data_t* data) {
+    TouchController* touch_ctrl = (TouchController*)lv_indev_get_user_data(indev_drv);
+    uint16_t touchX = 0, touchY = 0;
+    uint8_t gesture = 0;
 
-  // Set background color
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
+    bool touched = touch_ctrl->getTouch(&touchX, &touchY, &gesture);
+
+    if (touched) {
+      data->state = LV_INDEV_STATE_PRESSED;
+      data->point.x = touchX;
+      data->point.y = touchY;
+
+      // Optional: log touch coordinates for debugging
+      static uint16_t lastX = 0, lastY = 0;
+      if (touchX != lastX || touchY != lastY) {
+        DebugPrint("Touch: ");
+        DebugPrint(touchX);
+        DebugPrint(", ");
+        DebugPrintln(touchY);
+        lastX = touchX;
+        lastY = touchY;
+      }
+    }
+    else {
+      data->state = LV_INDEV_STATE_RELEASED;
+    }
+    });
+
+  // Set up UI
+  lv_obj_t* screen = lv_screen_active();
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
 
   // Create label
-  lv_obj_t* label = lv_label_create(scr);
+  lv_obj_t* label = lv_label_create(screen);
   lv_label_set_text(label, "Hello\nWorld!");
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
   lv_obj_align(label, LV_ALIGN_CENTER, 0, -30);
 
-  // Create a button
-  lv_obj_t* btn = lv_button_create(scr);
-  lv_obj_set_size(btn, 120, 50);
-  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 40);
+  // Create a button with click event
+  lv_obj_t* button = lv_button_create(screen);
+  lv_obj_set_size(button, 120, 50);
+  lv_obj_align(button, LV_ALIGN_CENTER, 0, 40);
 
-  lv_obj_t* btn_label = lv_label_create(btn);
-  lv_label_set_text(btn_label, "Click Me");
-  lv_obj_center(btn_label);
+  lv_obj_add_event_cb(button, [](lv_event_t* e) {
+    lv_obj_t* button = (lv_obj_t*)lv_event_get_target(e);
+    static bool is_green = false;
+
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+      is_green = !is_green;
+
+      if (is_green) {
+        // Change to green
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x00FF00), 0);
+        DebugPrintln("Button: GREEN");
+      }
+      else {
+        // Change to blue
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x2196F3), 0);
+        DebugPrintln("Button: BLUE");
+      }
+    }
+    }, LV_EVENT_CLICKED, NULL);
+
+  // Create button label
+  lv_obj_t* buttonLabel = lv_label_create(button);
+  lv_label_set_text(buttonLabel, "Click Me");
+  lv_obj_center(buttonLabel);
 
   // Force initial render
   lv_refr_now(lvglDisplay);
