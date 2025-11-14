@@ -12,10 +12,12 @@ namespace Pins {
   constexpr int POWER_ENABLE_1 = 1;
   constexpr int POWER_ENABLE_2 = 2;
   constexpr int LED = 48;
-  constexpr int SDA = 6;
-  constexpr int SCL = 5;
-  constexpr int RST = -1;
-  constexpr int INT = 7;
+  constexpr int TOUCH_SDA = 6;
+  constexpr int TOUCH_SCL = 7;
+  constexpr int TOUCH_RST = 13;
+  constexpr int TOUCH_INT = 5;
+  constexpr int I2C_SDA = 38;
+  constexpr int I2C_SCL = 39;
 }
 
 

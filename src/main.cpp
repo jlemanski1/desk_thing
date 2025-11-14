@@ -27,7 +27,7 @@ static uint16_t lv_buffer[bufferSize];
 DisplayManager displayManager;
 SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 EncoderController encoder(Pins::ENCODER_A, Pins::ENCODER_B, Pins::ENCODER_SWITCH);
-TouchController touch(Pins::SDA, Pins::SCL, Pins::RST, Pins::INT);
+TouchController touch(Pins::TOUCH_SDA, Pins::TOUCH_SCL, Pins::TOUCH_RST, Pins::TOUCH_INT);
 // Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Update interval
@@ -108,6 +108,32 @@ void checkWiFiReset() {
 
 
 
+static void onButtonClick(lv_event_t* e) {
+  lv_event_code_t eventCode = lv_event_get_code(e);
+  lv_obj_t* button = lv_event_get_target_obj(e);
+
+  if (eventCode == LV_EVENT_CLICKED) {
+    static uint8_t count = 0;
+    count++;
+
+    // Get the first child of the button (label) and update its text
+    lv_obj_t* label = lv_obj_get_child(button, 0);
+    lv_label_set_text_fmt(label, "Button: %d", count);
+  }
+}
+
+static void encoderValueChanged(lv_event_t* e) {
+  lv_obj_t* arc = lv_event_get_target_obj(e);
+  lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
+
+  lv_label_set_text_fmt(label, "%" LV_PRId32 "%%", lv_arc_get_value(arc));
+}
+
+uint32_t msCallback() {
+  return millis();
+}
+
+
 void setup() {
   DebugBegin(115200);
   delay(1000);
@@ -115,11 +141,13 @@ void setup() {
   // Initialize hardware
   initPowerPins();
   displayManager.begin();
-  // encoder.begin();
+  encoder.begin();
+  Wire.begin(Pins::I2C_SDA, Pins::I2C_SCL);
   touch.begin();
 
   // Init LVGL
   lv_init();
+  lv_tick_set_cb(msCallback);
 
   // Create Display Buffer
   lv_display_t* lvglDisplay = lv_display_create(screenWidth, screenHeight);
@@ -149,7 +177,7 @@ void setup() {
     lv_display_flush_ready(disp);
     });
 
-  // Setup touch input in LVGL
+  // Set up touch controller as LVGL input device
   lv_indev_t* indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_user_data(indev, &touch);
@@ -160,13 +188,12 @@ void setup() {
     uint8_t gesture = 0;
 
     bool touched = touch_ctrl->getTouch(&touchX, &touchY, &gesture);
-
+    Serial.println('TOUCHED!');
     if (touched) {
       data->state = LV_INDEV_STATE_PRESSED;
       data->point.x = touchX;
       data->point.y = touchY;
 
-      // Optional: log touch coordinates for debugging
       static uint16_t lastX = 0, lastY = 0;
       if (touchX != lastX || touchY != lastY) {
         DebugPrint("Touch: ");
@@ -181,6 +208,59 @@ void setup() {
       data->state = LV_INDEV_STATE_RELEASED;
     }
     });
+  // Set to event-driven mode
+  lv_indev_set_mode(indev, LV_INDEV_MODE_EVENT);
+
+  // TODO: Hook up Touch Controller touch handling to LVGL (encoder done)
+
+
+
+  // Set up Encoder as LVGL input device for volume control
+  lv_indev_t* encoder_indev = lv_indev_create();
+  lv_indev_set_type(encoder_indev, LV_INDEV_TYPE_ENCODER);
+  lv_indev_set_user_data(encoder_indev, &encoder);
+
+  lv_indev_set_read_cb(encoder_indev, [](lv_indev_t* indev_drv, lv_indev_data_t* data) {
+    EncoderController* enc = (EncoderController*)lv_indev_get_user_data(indev_drv);
+
+    uint32_t tick_now = lv_tick_get();
+
+    // If no interrupt has happened in the past 100 ms, pause the indev timer
+    if (lv_tick_elaps(enc->getLastInterruptTick()) > 100) {
+      lv_timer_t* timer = lv_indev_get_read_timer(indev_drv);
+      lv_timer_pause(timer);
+    }
+
+    if (enc->checkAndClearInterruptFlag()) {
+      enc->updateLastInterruptTick();
+
+      // Ensure the timer is running in case an interrupt occurred
+      // just after the timer was paused (race condition prevention)
+      lv_timer_t* timer = lv_indev_get_read_timer(indev_drv);
+      lv_timer_resume(timer);
+    }
+    // Get rotation delta
+    int rotation = enc->getRotationDelta();
+    data->enc_diff = rotation;
+
+    // Get button state
+    data->state = enc->isButtonPressed() ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    });
+
+  // Get the timer and store it in the encoder controller
+  lv_timer_t* encoder_timer = lv_indev_get_read_timer(encoder_indev);
+  encoder.setLvglIndevTimer(encoder_timer);
+  // Set encoder to event driven mode
+  lv_indev_set_mode(encoder_indev, LV_INDEV_MODE_EVENT);
+
+  // Create a group for the encoder
+  lv_group_t* encoder_group = lv_group_create();
+  lv_indev_set_group(encoder_indev, encoder_group);
+
+  // Associate the encoder input device with the group
+  lv_indev_set_group(encoder_indev, encoder_group);
+
+
 
   // Set up UI
   lv_obj_t* screen = lv_screen_active();
@@ -197,31 +277,55 @@ void setup() {
   lv_obj_t* button = lv_button_create(screen);
   lv_obj_set_size(button, 120, 50);
   lv_obj_align(button, LV_ALIGN_CENTER, 0, 40);
+  lv_obj_add_event_cb(button, onButtonClick, LV_EVENT_ALL, NULL);
 
-  lv_obj_add_event_cb(button, [](lv_event_t* e) {
-    lv_obj_t* button = (lv_obj_t*)lv_event_get_target(e);
-    static bool is_green = false;
+  // lv_obj_add_event_cb(button, [](lv_event_t* e) {
+  //   lv_obj_t* button = (lv_obj_t*)lv_event_get_target(e);
+  //   static bool is_green = false;
 
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-      is_green = !is_green;
+  //   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+  //     is_green = !is_green;
 
-      if (is_green) {
-        // Change to green
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x00FF00), 0);
-        DebugPrintln("Button: GREEN");
-      }
-      else {
-        // Change to blue
-        lv_obj_set_style_bg_color(button, lv_color_hex(0x2196F3), 0);
-        DebugPrintln("Button: BLUE");
-      }
-    }
-    }, LV_EVENT_CLICKED, NULL);
+  //     if (is_green) {
+  //       // Change to green
+  //       lv_obj_set_style_bg_color(button, lv_color_hex(0x00FF00), 0);
+  //       DebugPrintln("Button: GREEN");
+  //     }
+  //     else {
+  //       // Change to blue
+  //       lv_obj_set_style_bg_color(button, lv_color_hex(0x2196F3), 0);
+  //       DebugPrintln("Button: BLUE");
+  //     }
+  //   }
+  //   }, LV_EVENT_CLICKED, NULL);
 
   // Create button label
   lv_obj_t* buttonLabel = lv_label_create(button);
   lv_label_set_text(buttonLabel, "Click Me");
   lv_obj_center(buttonLabel);
+
+
+  // Create a group for the encoder
+
+  // Create Volume Arc
+  lv_obj_t* volumeLabel = lv_label_create(screen);
+  lv_obj_t* volumeArc = lv_arc_create(screen);
+  lv_obj_set_size(volumeArc, 220, 220);
+  lv_arc_set_rotation(volumeArc, 135);
+  lv_arc_set_bg_angles(volumeArc, 0, 270);
+  lv_arc_set_value(volumeArc, 10);
+  lv_obj_center(volumeArc);
+  lv_obj_add_event_cb(volumeArc, encoderValueChanged, LV_EVENT_VALUE_CHANGED, volumeLabel);
+
+  // Position the label inside the arc
+  lv_obj_align_to(volumeLabel, volumeArc, LV_ALIGN_CENTER, 0, 0);
+
+  // Add the volumeArc to the group so it can receive encoder input
+  lv_group_add_obj(encoder_group, volumeArc);
+
+
+  /*Manually update the label for the first time*/
+  lv_obj_send_event(volumeArc, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Force initial render
   lv_refr_now(lvglDisplay);

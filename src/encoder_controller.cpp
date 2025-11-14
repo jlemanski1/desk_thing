@@ -41,10 +41,16 @@ int EncoderController::getRotationDelta() {
   return delta;
 }
 
-bool EncoderController::wasButtonPressed() {
+bool EncoderController::isButtonPressed() {
   bool pressed = _buttonPressed;
   _buttonPressed = false;
   return pressed;
+}
+
+bool EncoderController::checkAndClearInterruptFlag() {
+  bool occurred = _interruptOccurred;
+  _interruptOccurred = false;
+  return occurred;
 }
 
 /**
@@ -64,9 +70,13 @@ void IRAM_ATTR EncoderController::handleRotation() {
   // This implements a state machine for reliable g_encoder reading
   if (sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) {
     _encoderDiff++; // Clockwise rotation
+    _interruptOccurred = true;
+    if (_indevTimer) lv_timer_resume(_indevTimer);
   }
   if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {
     _encoderDiff--; // Counter-clockwise rotation
+    _interruptOccurred = true;
+    if (_indevTimer) lv_timer_resume(_indevTimer);
   }
 
   _lastEncoded = encoded;
@@ -82,6 +92,9 @@ void IRAM_ATTR EncoderController::handleButton() {
   if (now - _lastButtonTime > Timing::BUTTON_DEBOUNCE_MS) {
     if (digitalRead(Pins::ENCODER_SWITCH) == LOW) {
       _buttonPressed = true;
+      _lastButtonTime = now;
+      if (_indevTimer) lv_timer_resume(_indevTimer);
+
       _lastButtonTime = now;
     }
   }
