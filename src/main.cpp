@@ -1,7 +1,6 @@
 #define LGFX_USE_V1
 
 #include "lgfx_display.h"
-// #include <Adafruit_NeoPixel.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -16,7 +15,7 @@
 #include "touch_controller.h"
 #include <Arduino.h>
 #include <lvgl.h>
-
+#include <math.h>
 
 static const uint8_t screenWidth = 240;
 static const uint8_t screenHeight = 240;
@@ -28,17 +27,46 @@ DisplayManager displayManager;
 SpotifyClient spotify(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 EncoderController encoder(Pins::ENCODER_A, Pins::ENCODER_B, Pins::ENCODER_SWITCH);
 TouchController touch(Pins::TOUCH_SDA, Pins::TOUCH_SCL, Pins::TOUCH_RST, Pins::TOUCH_INT);
-// Adafruit_NeoPixel ledStrip = Adafruit_NeoPixel(LED_NUM, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Update interval
 unsigned long lastPlaybackUpdate = 0;
+const uint32_t SPOTIFY_UPDATE_INTERVAL = 2000;
+
+// UI Mode
+typedef enum {
+  MODE_VOLUME,
+  MODE_SEEK
+} ui_mode_t;
+
+static ui_mode_t g_mode = MODE_VOLUME;
+
+// UI Objects
+static lv_obj_t* volume_arc = NULL;
+static lv_obj_t* progress_arc = NULL;
+static lv_obj_t* volume_label = NULL;
+static lv_obj_t* time_label = NULL;
+static lv_obj_t* track_label = NULL;
+static lv_obj_t* artist_label = NULL;
+static lv_obj_t* play_btn = NULL;
+static lv_obj_t* play_label = NULL;
+static lv_obj_t* orbit_dot = NULL;
+static lv_obj_t* mode_label = NULL;
+static lv_timer_t* orbit_timer = NULL;
+static lv_timer_t* spotify_update_timer = NULL;
+
+// Forward declarations
+static void play_btn_event_cb(lv_event_t* e);
+static void volume_arc_event_cb(lv_event_t* e);
+static void screen_gesture_cb(lv_event_t* e);
+static void orbit_timer_cb(lv_timer_t* timer);
+static void spotify_update_timer_cb(lv_timer_t* timer);
+static void format_time(char* buf, uint32_t ms);
+static void update_ui_from_spotify();
 
 void initPowerPins() {
-  // Power control for the display
   pinMode(Pins::POWER_CONTROL, OUTPUT);
   digitalWrite(Pins::POWER_CONTROL, LOW);
 
-  // Power control for touch controller & I2C
   pinMode(Pins::POWER_ENABLE_1, OUTPUT);
   digitalWrite(Pins::POWER_ENABLE_1, HIGH);
   pinMode(Pins::POWER_ENABLE_2, OUTPUT);
@@ -50,10 +78,7 @@ bool connectWiFi() {
 
   displayManager.showWiFiSetup();
 
-
   WiFiManager wifiManager;
-
-  // Set timeout for portal (3mins)
   wifiManager.setConfigPortalTimeout(180);
 
   wifiManager.setAPCallback([](WiFiManager* myWiFiManager) {
@@ -67,7 +92,6 @@ bool connectWiFi() {
     DebugPrintln("==============================");
     });
 
-  // Try to connect with saved credentials, or start config portal
   bool connected = wifiManager.autoConnect(Wifi::AP_NAME, Wifi::AP_PASS);
 
   if (connected) {
@@ -89,10 +113,6 @@ bool connectWiFi() {
   }
 }
 
-
-/**
- * @brief Resets the wifi manager settings when the encoder button is held during boot
- */
 void checkWiFiReset() {
   delay(500);
   if (digitalRead(Pins::ENCODER_SWITCH) == LOW) {
@@ -106,33 +126,250 @@ void checkWiFiReset() {
   }
 }
 
-
-
-static void onButtonClick(lv_event_t* e) {
-  lv_event_code_t eventCode = lv_event_get_code(e);
-  lv_obj_t* button = lv_event_get_target_obj(e);
-
-  if (eventCode == LV_EVENT_CLICKED) {
-    static uint8_t count = 0;
-    count++;
-
-    // Get the first child of the button (label) and update its text
-    lv_obj_t* label = lv_obj_get_child(button, 0);
-    lv_label_set_text_fmt(label, "Button: %d", count);
-  }
-}
-
-static void encoderValueChanged(lv_event_t* e) {
-  lv_obj_t* arc = lv_event_get_target_obj(e);
-  lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
-
-  lv_label_set_text_fmt(label, "%" LV_PRId32 "%%", lv_arc_get_value(arc));
-}
-
 uint32_t msCallback() {
   return millis();
 }
 
+// Create the circular music player UI
+void createMusicPlayerUI(lv_obj_t* parent) {
+  // Set dark background
+  lv_obj_set_style_bg_color(parent, lv_color_hex(0x0f172a), 0);
+
+  // Create main container
+  lv_obj_t* main_cont = lv_obj_create(parent);
+  lv_obj_set_size(main_cont, screenWidth, screenHeight);
+  lv_obj_center(main_cont);
+  lv_obj_set_style_bg_color(main_cont, lv_color_hex(0x0f172a), 0);
+  lv_obj_set_style_border_width(main_cont, 0, 0);
+  lv_obj_clear_flag(main_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Outer glow circle
+  lv_obj_t* glow = lv_obj_create(main_cont);
+  lv_obj_set_size(glow, 220, 220);
+  lv_obj_center(glow);
+  lv_obj_set_style_radius(glow, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(glow, lv_color_hex(0x4f46e5), 0);
+  lv_obj_set_style_bg_opa(glow, LV_OPA_20, 0);
+  lv_obj_set_style_border_width(glow, 0, 0);
+
+  // Volume arc (top half)
+  volume_arc = lv_arc_create(main_cont);
+  lv_obj_set_size(volume_arc, 200, 200);
+  lv_obj_center(volume_arc);
+  lv_arc_set_bg_angles(volume_arc, 180, 360);
+  lv_arc_set_range(volume_arc, 0, 100);
+  lv_arc_set_value(volume_arc, 50);
+  lv_obj_set_style_arc_width(volume_arc, 8, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(volume_arc, 8, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(volume_arc, lv_color_hex(0x4f46e5), LV_PART_MAIN);
+  lv_obj_set_style_arc_opa(volume_arc, LV_OPA_30, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(volume_arc, lv_color_hex(0x8b5cf6), LV_PART_INDICATOR);
+  lv_obj_remove_style(volume_arc, NULL, LV_PART_KNOB);
+  lv_obj_add_event_cb(volume_arc, volume_arc_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Progress arc (bottom orbit rings)
+  progress_arc = lv_arc_create(main_cont);
+  lv_obj_set_size(progress_arc, 180, 180);
+  lv_obj_center(progress_arc);
+  lv_arc_set_bg_angles(progress_arc, 0, 360);
+  lv_arc_set_range(progress_arc, 0, 100);
+  lv_arc_set_value(progress_arc, 0);
+  lv_obj_set_style_arc_width(progress_arc, 2, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(progress_arc, 2, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(progress_arc, lv_color_hex(0x4f46e5), LV_PART_MAIN);
+  lv_obj_set_style_arc_opa(progress_arc, LV_OPA_30, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(progress_arc, lv_color_hex(0xa855f7), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_opa(progress_arc, LV_OPA_50, LV_PART_INDICATOR);
+  lv_obj_remove_style(progress_arc, NULL, LV_PART_KNOB);
+  lv_obj_clear_flag(progress_arc, LV_OBJ_FLAG_CLICKABLE);
+
+  // Orbiting dot
+  orbit_dot = lv_obj_create(main_cont);
+  lv_obj_set_size(orbit_dot, 8, 8);
+  lv_obj_set_style_radius(orbit_dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(orbit_dot, lv_color_hex(0xa855f7), 0);
+  lv_obj_set_style_border_width(orbit_dot, 0, 0);
+  orbit_timer = lv_timer_create(orbit_timer_cb, 50, NULL);
+
+  // Center planet circle
+  lv_obj_t* planet = lv_obj_create(main_cont);
+  lv_obj_set_size(planet, 140, 140);
+  lv_obj_center(planet);
+  lv_obj_set_style_radius(planet, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(planet, lv_color_hex(0x4f46e5), 0);
+  lv_obj_set_style_bg_grad_color(planet, lv_color_hex(0x7c3aed), 0);
+  lv_obj_set_style_bg_grad_dir(planet, LV_GRAD_DIR_VER, 0);
+  lv_obj_set_style_border_width(planet, 0, 0);
+  lv_obj_set_style_shadow_width(planet, 30, 0);
+  lv_obj_set_style_shadow_color(planet, lv_color_hex(0x4f46e5), 0);
+  lv_obj_set_style_shadow_opa(planet, LV_OPA_50, 0);
+
+  // Play button
+  play_btn = lv_button_create(planet);
+  lv_obj_set_size(play_btn, 60, 60);
+  lv_obj_align(play_btn, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(play_btn, lv_color_hex(0xffffff), 0);
+  lv_obj_set_style_bg_opa(play_btn, LV_OPA_10, 0);
+  lv_obj_add_event_cb(play_btn, play_btn_event_cb, LV_EVENT_CLICKED, NULL);
+
+  play_label = lv_label_create(play_btn);
+  lv_label_set_text(play_label, LV_SYMBOL_PLAY);
+  lv_obj_center(play_label);
+
+  // Track name
+  track_label = lv_label_create(planet);
+  lv_label_set_text(track_label, "No Track");
+  lv_label_set_long_mode(track_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(track_label, 120);
+  lv_obj_align(track_label, LV_ALIGN_CENTER, 0, 25);
+  lv_obj_set_style_text_color(track_label, lv_color_hex(0xffffff), 0);
+  lv_obj_set_style_text_align(track_label, LV_TEXT_ALIGN_CENTER, 0);
+
+  // Artist name
+  artist_label = lv_label_create(planet);
+  lv_label_set_text(artist_label, "No Artist");
+  lv_label_set_long_mode(artist_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(artist_label, 120);
+  lv_obj_align(artist_label, LV_ALIGN_CENTER, 0, 43);
+  lv_obj_set_style_text_color(artist_label, lv_color_hex(0xc7d2fe), 0);
+  lv_obj_set_style_text_align(artist_label, LV_TEXT_ALIGN_CENTER, 0);
+
+  // Time label
+  time_label = lv_label_create(planet);
+  lv_label_set_text(time_label, "0:00 / 0:00");
+  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 58);
+  lv_obj_set_style_text_color(time_label, lv_color_hex(0xa5b4fc), 0);
+
+  // Volume label
+  volume_label = lv_label_create(main_cont);
+  lv_label_set_text_fmt(volume_label, LV_SYMBOL_VOLUME_MAX " 50%%");
+  lv_obj_align(volume_label, LV_ALIGN_TOP_MID, 0, 10);
+  lv_obj_set_style_text_color(volume_label, lv_color_hex(0xa5b4fc), 0);
+
+  // Mode indicator label (bottom)
+  mode_label = lv_label_create(main_cont);
+  lv_label_set_text(mode_label, "VOLUME");
+  lv_obj_align(mode_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lv_obj_set_style_text_color(mode_label, lv_color_hex(0x6366f1), 0);
+
+  // Add gesture handling
+  lv_obj_add_event_cb(main_cont, screen_gesture_cb, LV_EVENT_GESTURE, NULL);
+  lv_obj_add_flag(main_cont, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+  // Create Spotify update timer
+  spotify_update_timer = lv_timer_create(spotify_update_timer_cb, SPOTIFY_UPDATE_INTERVAL, NULL);
+}
+
+// Update UI from Spotify state
+static void update_ui_from_spotify() {
+  // Update volume arc and label
+  int volume = spotify.getVolume();
+  lv_arc_set_value(volume_arc, volume);
+  lv_label_set_text_fmt(volume_label, LV_SYMBOL_VOLUME_MAX " %d%%", volume);
+
+  // Update progress arc
+  int duration = spotify.getTrackDurationMs();
+  int progress = spotify.getTrackProgressMs();
+
+  if (duration > 0) {
+    int progress_percent = (progress * 100) / duration;
+    lv_arc_set_value(progress_arc, progress_percent);
+  }
+  else {
+    lv_arc_set_value(progress_arc, 0);
+  }
+
+  // Update time label
+  char time_buf[32];
+  format_time(time_buf, progress);
+  strcat(time_buf, " / ");
+  char duration_buf[16];
+  format_time(duration_buf, duration);
+  strcat(time_buf, duration_buf);
+  lv_label_set_text(time_label, time_buf);
+
+  // Update play/pause icon
+  const char* icon = spotify.isPlaying() ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY;
+  lv_label_set_text(play_label, icon);
+
+  // Update track info
+  String trackName = spotify.getTrackName();
+  String artistName = spotify.getArtistName();
+
+  if (trackName.length() > 0) {
+    lv_label_set_text(track_label, trackName.c_str());
+  }
+  else {
+    lv_label_set_text(track_label, "No Track");
+  }
+
+  if (artistName.length() > 0) {
+    lv_label_set_text(artist_label, artistName.c_str());
+  }
+  else {
+    lv_label_set_text(artist_label, "");
+  }
+}
+
+// Timer callback for Spotify updates
+static void spotify_update_timer_cb(lv_timer_t* timer) {
+  spotify.updatePlaybackState();
+  update_ui_from_spotify();
+}
+
+// Event callbacks
+static void play_btn_event_cb(lv_event_t* e) {
+  spotify.togglePlayPause();
+  delay(300);
+  spotify.updatePlaybackState();
+  update_ui_from_spotify();
+}
+
+static void volume_arc_event_cb(lv_event_t* e) {
+  lv_obj_t* arc = lv_event_get_target_obj(e);
+  int volume = lv_arc_get_value(arc);
+  lv_label_set_text_fmt(volume_label, LV_SYMBOL_VOLUME_MAX " %d%%", volume);
+  spotify.setVolume(volume);
+}
+
+static void screen_gesture_cb(lv_event_t* e) {
+  lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+
+  if (dir == LV_DIR_LEFT) {
+    spotify.nextTrack();
+  }
+  else if (dir == LV_DIR_RIGHT) {
+    spotify.previousTrack();
+  }
+}
+
+static void orbit_timer_cb(lv_timer_t* timer) {
+  static int angle = 0;
+
+  // Only animate if playing
+  if (spotify.isPlaying()) {
+    angle = (angle + 2) % 360;
+  }
+
+  // Calculate orbit position
+  int center_x = screenWidth / 2;
+  int center_y = screenHeight / 2;
+  int radius = 90;
+
+  float rad = angle * 3.14159 / 180.0;
+  int x = center_x + (int)(radius * cos(rad)) - 4;
+  int y = center_y + (int)(radius * sin(rad)) - 4;
+
+  lv_obj_set_pos(orbit_dot, x, y);
+}
+
+static void format_time(char* buf, uint32_t ms) {
+  uint32_t seconds = ms / 1000;
+  uint32_t mins = seconds / 60;
+  uint32_t secs = seconds % 60;
+  snprintf(buf, 16, "%d:%02d", mins, secs);
+}
 
 void setup() {
   DebugBegin(115200);
@@ -153,7 +390,7 @@ void setup() {
   lv_display_t* lvglDisplay = lv_display_create(screenWidth, screenHeight);
 
   // Allocate draw buffers
-  size_t buf_size = screenWidth * 50; // 50 lines
+  size_t buf_size = screenWidth * 50;
   void* buf1 = heap_caps_malloc(buf_size * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   if (!buf1) {
     DebugPrintln("ERROR: Failed to allocate LVGL buffer!");
@@ -188,32 +425,18 @@ void setup() {
     uint8_t gesture = 0;
 
     bool touched = touch_ctrl->getTouch(&touchX, &touchY, &gesture);
-    Serial.println('TOUCHED!');
+
     if (touched) {
       data->state = LV_INDEV_STATE_PRESSED;
       data->point.x = touchX;
       data->point.y = touchY;
-
-      static uint16_t lastX = 0, lastY = 0;
-      if (touchX != lastX || touchY != lastY) {
-        DebugPrint("Touch: ");
-        DebugPrint(touchX);
-        DebugPrint(", ");
-        DebugPrintln(touchY);
-        lastX = touchX;
-        lastY = touchY;
-      }
     }
     else {
       data->state = LV_INDEV_STATE_RELEASED;
     }
     });
-  // Set to event-driven mode
+
   lv_indev_set_mode(indev, LV_INDEV_MODE_EVENT);
-
-  // TODO: Hook up Touch Controller touch handling to LVGL (encoder done)
-
-
 
   // Set up Encoder as LVGL input device for volume control
   lv_indev_t* encoder_indev = lv_indev_create();
@@ -223,9 +446,7 @@ void setup() {
   lv_indev_set_read_cb(encoder_indev, [](lv_indev_t* indev_drv, lv_indev_data_t* data) {
     EncoderController* enc = (EncoderController*)lv_indev_get_user_data(indev_drv);
 
-    uint32_t tick_now = lv_tick_get();
-
-    // If no interrupt has happened in the past 100 ms, pause the indev timer
+    // Pause timer if no recent activity
     if (lv_tick_elaps(enc->getLastInterruptTick()) > 100) {
       lv_timer_t* timer = lv_indev_get_read_timer(indev_drv);
       lv_timer_pause(timer);
@@ -233,154 +454,107 @@ void setup() {
 
     if (enc->checkAndClearInterruptFlag()) {
       enc->updateLastInterruptTick();
-
-      // Ensure the timer is running in case an interrupt occurred
-      // just after the timer was paused (race condition prevention)
       lv_timer_t* timer = lv_indev_get_read_timer(indev_drv);
       lv_timer_resume(timer);
     }
-    // Get rotation delta
-    int rotation = enc->getRotationDelta();
-    data->enc_diff = rotation;
 
-    // Get button state
-    data->state = enc->isButtonPressed() ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    // Handle encoder rotation
+    int rotation = enc->getRotationDelta();
+    if (rotation != 0) {
+      if (g_mode == MODE_VOLUME) {
+        int current_vol = spotify.getVolume();
+        int new_vol = current_vol + rotation;
+        new_vol = constrain(new_vol, 0, 100);
+        lv_arc_set_value(volume_arc, new_vol);
+        lv_label_set_text_fmt(volume_label, LV_SYMBOL_VOLUME_MAX " %d%%", new_vol);
+        spotify.setVolume(new_vol);
+      }
+      else if (g_mode == MODE_SEEK) {
+        int current_pos = spotify.getTrackProgressMs();
+        int duration = spotify.getTrackDurationMs();
+        int new_pos = current_pos + (rotation * 5000); // 5 seconds
+        new_pos = constrain(new_pos, 0, duration);
+        spotify.seekToPosition(new_pos);
+        delay(100);
+        spotify.updatePlaybackState();
+        update_ui_from_spotify();
+      }
+    }
+
+    // Handle button press
+    static bool last_btn_state = false;
+    static uint32_t press_start = 0;
+    bool btn_pressed = enc->isButtonPressed();
+
+    if (btn_pressed && !last_btn_state) {
+      press_start = millis();
+    }
+    else if (!btn_pressed && last_btn_state) {
+      uint32_t press_duration = millis() - press_start;
+      if (press_duration >= 1000) {
+        // Long press - toggle mode
+        g_mode = (g_mode == MODE_VOLUME) ? MODE_SEEK : MODE_VOLUME;
+        lv_label_set_text(mode_label, g_mode == MODE_VOLUME ? "VOLUME" : "SEEK");
+        lv_obj_set_style_text_color(mode_label, g_mode == MODE_VOLUME ? lv_color_hex(0x6366f1) : lv_color_hex(0xa855f7), 0);
+      }
+      else {
+        // Short press - play/pause
+        spotify.togglePlayPause();
+        delay(300);
+        spotify.updatePlaybackState();
+        update_ui_from_spotify();
+      }
+    }
+    last_btn_state = btn_pressed;
+
+    data->state = LV_INDEV_STATE_RELEASED;
     });
 
-  // Get the timer and store it in the encoder controller
   lv_timer_t* encoder_timer = lv_indev_get_read_timer(encoder_indev);
   encoder.setLvglIndevTimer(encoder_timer);
-  // Set encoder to event driven mode
   lv_indev_set_mode(encoder_indev, LV_INDEV_MODE_EVENT);
 
   // Create a group for the encoder
   lv_group_t* encoder_group = lv_group_create();
   lv_indev_set_group(encoder_indev, encoder_group);
 
-  // Associate the encoder input device with the group
-  lv_indev_set_group(encoder_indev, encoder_group);
-
-
-
   // Set up UI
   lv_obj_t* screen = lv_screen_active();
-  lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
 
-  // Create label
-  lv_obj_t* label = lv_label_create(screen);
-  lv_label_set_text(label, "Hello\nWorld!");
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, -30);
+  // Create the circular music player UI
+  createMusicPlayerUI(screen);
 
-  // Create a button with click event
-  lv_obj_t* button = lv_button_create(screen);
-  lv_obj_set_size(button, 120, 50);
-  lv_obj_align(button, LV_ALIGN_CENTER, 0, 40);
-  lv_obj_add_event_cb(button, onButtonClick, LV_EVENT_ALL, NULL);
-
-  // lv_obj_add_event_cb(button, [](lv_event_t* e) {
-  //   lv_obj_t* button = (lv_obj_t*)lv_event_get_target(e);
-  //   static bool is_green = false;
-
-  //   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-  //     is_green = !is_green;
-
-  //     if (is_green) {
-  //       // Change to green
-  //       lv_obj_set_style_bg_color(button, lv_color_hex(0x00FF00), 0);
-  //       DebugPrintln("Button: GREEN");
-  //     }
-  //     else {
-  //       // Change to blue
-  //       lv_obj_set_style_bg_color(button, lv_color_hex(0x2196F3), 0);
-  //       DebugPrintln("Button: BLUE");
-  //     }
-  //   }
-  //   }, LV_EVENT_CLICKED, NULL);
-
-  // Create button label
-  lv_obj_t* buttonLabel = lv_label_create(button);
-  lv_label_set_text(buttonLabel, "Click Me");
-  lv_obj_center(buttonLabel);
-
-
-  // Create a group for the encoder
-
-  // Create Volume Arc
-  lv_obj_t* volumeLabel = lv_label_create(screen);
-  lv_obj_t* volumeArc = lv_arc_create(screen);
-  lv_obj_set_size(volumeArc, 220, 220);
-  lv_arc_set_rotation(volumeArc, 135);
-  lv_arc_set_bg_angles(volumeArc, 0, 270);
-  lv_arc_set_value(volumeArc, 10);
-  lv_obj_center(volumeArc);
-  lv_obj_add_event_cb(volumeArc, encoderValueChanged, LV_EVENT_VALUE_CHANGED, volumeLabel);
-
-  // Position the label inside the arc
-  lv_obj_align_to(volumeLabel, volumeArc, LV_ALIGN_CENTER, 0, 0);
-
-  // Add the volumeArc to the group so it can receive encoder input
-  lv_group_add_obj(encoder_group, volumeArc);
-
-
-  /*Manually update the label for the first time*/
-  lv_obj_send_event(volumeArc, LV_EVENT_VALUE_CHANGED, NULL);
+  // Add volume arc to encoder group
+  lv_group_add_obj(encoder_group, volume_arc);
 
   // Force initial render
   lv_refr_now(lvglDisplay);
 
-  // checkWiFiReset();
+  checkWiFiReset();
 
-  // // Connect to Wifi
-  // if (!connectWiFi()) {
-  //   ESP.restart();
-  // }
+  // Connect to Wifi
+  if (!connectWiFi()) {
+    ESP.restart();
+  }
 
-  // // Initialize Spotify
-  // displayManager.showSpotifyConnecting();
+  // Initialize Spotify
+  displayManager.showSpotifyConnecting();
 
-  // if (!spotify.begin()) {
-  //   DebugPrintln("Spotify init failed!");
-  //   displayManager.showSpotifyFailed();
-  //   while (1) delay(1000);
-  // }
+  if (!spotify.begin()) {
+    DebugPrintln("Spotify init failed!");
+    displayManager.showSpotifyFailed();
+    while (1) delay(1000);
+  }
 
-  // // Get initial state
-  // delay(500);
-  // spotify.updatePlaybackState();
-  // displayManager.showPlaybackState(spotify);
+  // Get initial state
+  delay(500);
+  spotify.updatePlaybackState();
+  update_ui_from_spotify();
 
   DebugPrintln("Setup Complete!");
 }
 
 void loop() {
-  lv_timer_handler(); // Let LVGL handle rendering and events
+  lv_timer_handler();
   delay(5);
-  // // Volume control
-  // int rotation = encoder.getRotationDelta();
-  // if (rotation != 0) {
-  //   int newVolume = spotify.getVolume() + (rotation * Encoder::VOLUME_STEP);
-
-  //   if (spotify.setVolume(newVolume)) {
-  //     displayManager.showPlaybackState(spotify);
-  //   }
-  // }
-
-  // // Play/pause
-  // if (encoder.wasButtonPressed()) {
-  //   if (spotify.togglePlayPause()) {
-  //     displayManager.showPlaybackState(spotify);
-  //   }
-  // }
-
-  // // Update playback info periodically
-  // if (millis() - lastPlaybackUpdate > Timing::PLAYBACK_UPDATE_MS) {
-  //   lastPlaybackUpdate = millis();
-  //   if (spotify.updatePlaybackState()) {
-  //     displayManager.showPlaybackState(spotify);
-  //   }
-  // }
-
-  // delay(50);
 }
